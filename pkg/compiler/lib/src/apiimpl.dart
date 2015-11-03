@@ -7,25 +7,38 @@ library leg_apiimpl;
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:package_config/packages.dart';
+import 'package:package_config/packages_file.dart' as pkgs;
+import 'package:package_config/src/packages_impl.dart' show
+    MapPackages,
+    NonFilePackagesDirectoryPackages;
+import 'package:package_config/src/util.dart' show
+    checkValidPackageUri;
+
 import '../compiler_new.dart' as api;
 import 'dart2jslib.dart' as leg;
 import 'tree/tree.dart' as tree;
 import 'elements/elements.dart' as elements;
-import 'package:sdk_library_metadata/libraries.dart' as library_info;
 import 'io/source_file.dart';
-import 'package:package_config/packages.dart';
-import 'package:package_config/packages_file.dart' as pkgs;
-import 'package:package_config/src/packages_impl.dart'
-    show NonFilePackagesDirectoryPackages, MapPackages;
 import 'package:package_config/src/util.dart' show checkValidPackageUri;
+import 'platform_configuration.dart' as platform_configuration;
+import 'util/util.dart' show Spannable, NO_LOCATION_SPANNABLE;
 
 const bool forceIncrementalSupport =
     const bool.fromEnvironment('DART2JS_EXPERIMENTAL_INCREMENTAL_SUPPORT');
 
+/// Locations of the platform descriptor files relative to the library root.
+const String _clientPlatform = "lib/dart_client.platform";
+const String _serverPlatform = "lib/dart_server.platform";
+const String _sharedPlatform = "lib/dart_shared.platform";
+const String _dart2dartPlatform = "lib/dart2dart.platform";
+
+/// Implements the [Compiler] using a [api.CompilerInput] for supplying the
+/// sources.
 class Compiler extends leg.Compiler {
   api.CompilerInput provider;
   api.CompilerDiagnostics handler;
-  final Uri libraryRoot;
+  final Uri platformConfigUri;
   final Uri packageConfig;
   final Uri packageRoot;
   final api.PackagesDiscoveryProvider packagesDiscoveryProvider;
@@ -33,16 +46,22 @@ class Compiler extends leg.Compiler {
   List<String> options;
   Map<String, dynamic> environment;
   bool mockableLibraryUsed = false;
-  final Set<library_info.Category> allowedLibraryCategories;
+
+  /// A mapping of the dart: library-names to their location.
+  ///
+  /// Initialized in [setupSdk].
+  Map<String, Uri> sdkLibraries;
 
   leg.GenericTask userHandlerTask;
   leg.GenericTask userProviderTask;
   leg.GenericTask userPackagesDiscoveryTask;
 
+  Uri get libraryRoot => platformConfigUri.resolve(".");
+
   Compiler(this.provider,
            api.CompilerOutput outputProvider,
            this.handler,
-           this.libraryRoot,
+           Uri libraryRoot,
            this.packageRoot,
            List<String> options,
            this.environment,
@@ -50,7 +69,7 @@ class Compiler extends leg.Compiler {
             this.packagesDiscoveryProvider,
             leg.Backend makeBackend(Compiler compiler)])
       : this.options = options,
-        this.allowedLibraryCategories = getAllowedLibraryCategories(options),
+        this.platformConfigUri = resolvePlatformConfig(libraryRoot, options),
         super(
             outputProvider: outputProvider,
             enableTypeAssertions: hasOption(options, '--enable-checked-mode'),
@@ -161,29 +180,33 @@ class Compiler extends leg.Compiler {
     return const <String>[];
   }
 
-  static Set<library_info.Category> getAllowedLibraryCategories(
-      List<String> options) {
-    Iterable<library_info.Category> categories =
-      extractCsvOption(options, '--categories=')
-          .map(library_info.parseCategory)
-          .where((x) => x != null);
-    if (categories.isEmpty) {
-      return new Set.from([library_info.Category.client]);
+  static Uri resolvePlatformConfig(Uri libraryRoot,
+                                   List<String> options) {
+    String platformConfigPath =
+        extractStringOption(options, "--platform-config=", null);
+    if (platformConfigPath != null) {
+      return libraryRoot.resolve(platformConfigPath);
+    } else if (hasOption(options, '--output-type=dart')) {
+      return libraryRoot.resolve(_dart2dartPlatform);
+    } else {
+      Iterable<String> categories = extractCsvOption(options, '--categories=');
+      if (categories.length == 0) {
+        return libraryRoot.resolve(_clientPlatform);
+      }
+      assert(categories.length <= 2);
+      if (categories.contains("Client")) {
+        if (categories.contains("Server")) {
+          return libraryRoot.resolve(_sharedPlatform);
+        }
+        return libraryRoot.resolve(_clientPlatform);
+      }
+      assert(categories.contains("Server"));
+      return libraryRoot.resolve(_serverPlatform);
     }
-    return new Set.from(categories);
   }
 
   static bool hasOption(List<String> options, String option) {
     return options.indexOf(option) >= 0;
-  }
-
-  String lookupPatchPath(String dartLibraryName) {
-    library_info.LibraryInfo info = lookupLibraryInfo(dartLibraryName);
-    if (info == null) return null;
-    if (!info.isDart2jsLibrary) return null;
-    String path = info.dart2jsPatchPath;
-    if (path == null) return null;
-    return "lib/$path";
   }
 
   void log(message) {
@@ -289,64 +312,59 @@ class Compiler extends leg.Compiler {
   }
 
   /// Translates "resolvedUri" with scheme "dart" to a [uri] resolved relative
-  /// to [libraryRoot] according to the information in [library_info.libraries].
+  /// to [platformConfigUri] according to the information in the file at
+  /// [platformConfigUri].
   ///
   /// Returns null and emits an error if the library could not be found or
   /// imported into [importingLibrary].
   ///
-  /// If [importingLibrary] is a platform or patch library all dart2js libraries
-  /// can be resolved. Otherwise only libraries with categories in
-  /// [allowedLibraryCategories] can be resolved.
+  /// Internal libraries (whose name starts with '_') can be only resolved if
+  /// [importingLibrary] is a platform or patch library.
   Uri translateDartUri(elements.LibraryElement importingLibrary,
-                       Uri resolvedUri, tree.Node node) {
-    library_info.LibraryInfo info = lookupLibraryInfo(resolvedUri.path);
+                       Uri resolvedUri, Spannable spannable) {
 
-    bool allowInternalLibraryAccess = false;
-    if (importingLibrary != null) {
-      if (importingLibrary.isPlatformLibrary || importingLibrary.isPatch) {
-        allowInternalLibraryAccess = true;
-      } else if (importingLibrary.canonicalUri.path.contains(
-          'sdk/tests/compiler/dart2js_native')) {
-        allowInternalLibraryAccess = true;
-      }
+    Uri location = lookupLibraryUri(resolvedUri.path);
+
+    if (location == null) {
+      reportError(
+          spannable,
+          leg.MessageKind.LIBRARY_NOT_FOUND,
+          {'resolvedUri': resolvedUri});
+      return null;
     }
 
-    String computePath() {
-      if (info == null) {
-        return null;
-      } else if (!info.isDart2jsLibrary) {
-        return null;
-      } else {
-        if (info.isInternal &&
-            !allowInternalLibraryAccess) {
-          if (importingLibrary != null) {
-            reportError(
-                node,
-                leg.MessageKind.INTERNAL_LIBRARY_FROM,
-                {'resolvedUri': resolvedUri,
-                 'importingUri': importingLibrary.canonicalUri});
-          } else {
-            reportError(
-                node,
-                leg.MessageKind.INTERNAL_LIBRARY,
-                {'resolvedUri': resolvedUri});
-          }
-          return null;
-        } else if (!allowInternalLibraryAccess &&
-            !allowedLibraryCategories.any(info.categories.contains)) {
-          // TODO(sigurdm): Currently we allow the sdk libraries to import
-          // libraries from any category. We might want to revisit this.
-          return null;
-        } else {
-          return (info.dart2jsPath != null) ? info.dart2jsPath : info.path;
+    if (resolvedUri.path.startsWith('_')  ) {
+      bool allowInternalLibraryAccess = false;
+      if (importingLibrary != null) {
+        if (importingLibrary.isPlatformLibrary || importingLibrary.isPatch) {
+          allowInternalLibraryAccess = true;
+        } else if (importingLibrary.canonicalUri.path.contains(
+            'sdk/tests/compiler/dart2js_native')) {
+          allowInternalLibraryAccess = true;
         }
       }
+
+      if (!allowInternalLibraryAccess) {
+        if (importingLibrary != null) {
+          reportError(
+              spannable,
+              leg.MessageKind.INTERNAL_LIBRARY_FROM,
+              {'resolvedUri': resolvedUri,
+                'importingUri': importingLibrary.canonicalUri});
+        } else {
+          reportError(
+              spannable,
+              leg.MessageKind.INTERNAL_LIBRARY,
+              {'resolvedUri': resolvedUri});
+        }
+        return null;
+      }
     }
 
-    String path = computePath();
-
-    if (path == null) {
-      reportError(node, leg.MessageKind.LIBRARY_NOT_FOUND,
+    if (location.scheme == "unsupported") {
+      reportError(
+          spannable,
+          leg.MessageKind.LIBRARY_NOT_SUPPORTED,
           {'resolvedUri': resolvedUri});
       return null;
     }
@@ -357,13 +375,7 @@ class Compiler extends leg.Compiler {
       // supports this use case better.
       mockableLibraryUsed = true;
     }
-    return libraryRoot.resolve("lib/$path");
-  }
-
-  Uri resolvePatchUri(String dartLibraryPath) {
-    String patchPath = lookupPatchPath(dartLibraryPath);
-    if (patchPath == null) return null;
-    return libraryRoot.resolve(patchPath);
+    return location;
   }
 
   Uri translatePackageUri(leg.Spannable node, Uri uri) {
@@ -424,10 +436,30 @@ class Compiler extends leg.Compiler {
     return new Future.value();
   }
 
-  Future<bool> run(Uri uri) {
-    log('Allowed library categories: $allowedLibraryCategories');
+  Future<Null> setupSdk() {
+    if (sdkLibraries == null) {
+      return platform_configuration.load(platformConfigUri, provider)
+          .then((Map<String, Uri> mapping) {
+        sdkLibraries = mapping;
+      });
+    } else {
+      // The incremental compiler sets up the sdk before run.
+      // Therefore this will be called a second time.
+      return new Future.value(null);
+    }
+  }
 
-    return setupPackages(uri).then((_) {
+  Future runCompiler(Uri uri) {
+    // This is a hack to ensure the tests will call setupSdk even if they call
+    // runCompiler instead of run. This is fixed upstream.
+    return setupSdk().then((_) => super.runCompiler(uri));
+  }
+
+  Future<bool> run(Uri uri) {
+    log('Using platform configuration at ${platformConfigUri}');
+
+    return Future.wait([setupSdk(), setupPackages(uri)]).then((_) {
+      assert(sdkLibraries != null);
       assert(packages != null);
 
       return super.run(uri).then((bool success) {
@@ -511,7 +543,13 @@ class Compiler extends leg.Compiler {
 
   fromEnvironment(String name) => environment[name];
 
-  library_info.LibraryInfo lookupLibraryInfo(String libraryName) {
-    return library_info.libraries[libraryName];
+  Uri lookupLibraryUri(String libraryName) {
+    assert(leg.invariant(NO_LOCATION_SPANNABLE,
+        sdkLibraries != null, message: "setupSdk() has not been run"));
+    return sdkLibraries[libraryName];
+  }
+
+  Uri resolvePatchUri(String libraryName) {
+    return backend.resolvePatchUri(libraryName, platformConfigUri);
   }
 }

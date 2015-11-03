@@ -124,7 +124,7 @@ class IncrementalCompiler {
     }
     Future mappingInputProvider(Uri uri) {
       Uri updatedFile = updatedFiles[uri];
-      return inputProvider(updatedFile == null ? uri : updatedFile);
+      return inputProvider.readFromUri(updatedFile == null ? uri : updatedFile);
     }
     LibraryUpdater updater = new LibraryUpdater(
         _compiler,
@@ -157,9 +157,7 @@ function dartMainRunner(main, args) {
   return main(args);
 }""", {'updates': updates, 'helper': backend.namer.accessIncrementalHelper});
 
-    jsAst.Printer printer = new jsAst.Printer(_compiler, null);
-    printer.blockOutWithoutBraces(mainRunner);
-    return printer.outBuffer.getText();
+    return jsAst.prettyPrint(mainRunner, _compiler).getText();
   }
 }
 

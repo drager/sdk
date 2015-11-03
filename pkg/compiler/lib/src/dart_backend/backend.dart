@@ -329,6 +329,12 @@ class DartBackend extends Backend {
     compiler.reportWarning(node, MessageKind.DEFERRED_LIBRARY_DART_2_DART);
     return false;
   }
+
+  @override
+  Uri resolvePatchUri(String libraryName, Uri) {
+    // Dart2dart does not use patches.
+    return null;
+  }
 }
 
 class DartResolutionCallbacks extends ResolutionCallbacks {

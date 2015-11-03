@@ -265,6 +265,7 @@ enum MessageKind {
   INVALID_USE_OF_SUPER,
   LIBRARY_NAME_MISMATCH,
   LIBRARY_NOT_FOUND,
+  LIBRARY_NOT_SUPPORTED,
   LIBRARY_TAG_MUST_BE_FIRST,
   MAIN_NOT_A_FUNCTION,
   MAIN_WITH_EXTRA_PARAMETER,
@@ -2074,6 +2075,10 @@ main() => A.A = 1;
       MessageKind.LIBRARY_NOT_FOUND:
         const MessageTemplate(MessageKind.LIBRARY_NOT_FOUND,
           "Library not found '#{resolvedUri}'."),
+
+      MessageKind.LIBRARY_NOT_SUPPORTED:
+      const MessageTemplate(MessageKind.LIBRARY_NOT_SUPPORTED,
+          "Library not supported on the current backend '#{resolvedUri}'."),
 
       MessageKind.UNSUPPORTED_EQ_EQ_EQ:
         const MessageTemplate(MessageKind.UNSUPPORTED_EQ_EQ_EQ,

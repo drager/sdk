@@ -551,6 +551,8 @@ abstract class Backend {
                              Registry registry) {}
 
   EnqueueTask makeEnqueuer() => new EnqueueTask(compiler);
+
+  Uri resolvePatchUri(String libraryName, Uri platformConfigUri);
 }
 
 /// Backend callbacks function specific to the resolution phase.
@@ -2197,7 +2199,6 @@ abstract class Compiler implements DiagnosticListener {
 class CompilerTask {
   final Compiler compiler;
   final Stopwatch watch;
-  UserTag profilerTag;
 
   CompilerTask(Compiler compiler)
       : this.compiler = compiler,
@@ -2208,11 +2209,6 @@ class CompilerTask {
 
   int get timingMicroseconds => (watch != null) ? watch.elapsedMicroseconds : 0;
 
-  UserTag getProfilerTag() {
-    if (profilerTag == null) profilerTag = new UserTag(name);
-    return profilerTag;
-  }
-
   measure(action()) {
     // In verbose mode when watch != null.
     if (watch == null) return action();
@@ -2221,12 +2217,10 @@ class CompilerTask {
     compiler.measuredTask = this;
     if (previous != null) previous.watch.stop();
     watch.start();
-    UserTag oldTag = getProfilerTag().makeCurrent();
     try {
       return action();
     } finally {
       watch.stop();
-      oldTag.makeCurrent();
       if (previous != null) previous.watch.start();
       compiler.measuredTask = previous;
     }

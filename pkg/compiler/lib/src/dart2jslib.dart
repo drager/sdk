@@ -6,8 +6,6 @@ library dart2js;
 
 import 'dart:async';
 import 'dart:collection' show Queue;
-import 'dart:profiler' show
-    UserTag;
 
 import '../compiler_new.dart' as api;
 import 'cache_strategy.dart';
