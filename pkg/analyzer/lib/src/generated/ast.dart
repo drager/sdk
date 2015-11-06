@@ -723,6 +723,113 @@ class AssertStatement extends Statement {
   }
 }
 
+class MatchExpression extends Expression {
+  /**
+   * The token representing the 'match' keyword.
+   */
+  Token matchKeyword;
+
+  /**
+   * The left parenthesis.
+   */
+  Token leftParenthesis;
+
+  /**
+   * The expression used to determine which of the patterns will be
+   * matched.
+   */
+  Expression _expression;
+
+  /**
+   * The right parenthesis.
+   */
+  Token rightParenthesis;
+
+  /**
+   * The left curly bracket.
+   */
+  Token leftBracket;
+
+  /**
+   * The clauses contained in the expression.
+   */
+  NodeList<MatchClause> _clauses;
+
+  /**
+   * The right curly bracket.
+   */
+  Token rightBracket;
+
+  MatchExpression(
+      this.matchKeyword,
+      this.leftParenthesis,
+      Expression expression,
+      this.rightParenthesis,
+      this.leftBracket,
+      NodeList<MatchClause> clauses,
+      this.rightBracket) {
+    _expression = _becomeParentOf(expression);
+    _clauses = _becomeParentOf(clauses);
+  }
+}
+
+class MatchClause extends AstNode {
+  Pattern _pattern;
+
+  PatternGuard _patternGuard;
+
+  Token fatArrow;
+
+  ExpressionStatement _armExpression;
+
+  MatchClause(
+    Pattern pattern,
+    PatternGuard patternGuard,
+    this.fatArrow,
+    ExpressionStatement armExpression) {
+    _pattern = _becomeParentOf(pattern);
+    _patternGuard = _becomeParentOf(patternGuard);
+    _armExpression = _becomeParentOf(armExpression);
+  }
+}
+
+class Pattern extends AstNode {
+  Literal _pattern;
+
+  Pattern(Literal pattern) {
+    if (pattern == null) {
+      String message = "The pattern is null";
+      AnalysisEngine.instance.logger.logError(
+          message, new CaughtException(new AnalysisException(message), null));
+    }
+    _pattern = _becomeParentOf(pattern);
+  }
+}
+
+class PatternGuard extends AstNode {
+  Token ifKeyword;
+
+  /**
+   * The left parenthesis.
+   */
+  Token leftParenthesis;
+
+  Expression _condition;
+
+  /**
+   * The right parenthesis.
+   */
+  Token rightParenthesis;
+
+  PatternGuard(
+      this.ifKeyword,
+      this.leftParanthesis,
+      Expression condition,
+      this.rightParanthesis) {
+    _condition = _becomeParentOf(condition);
+  }
+}
+
 /**
  * An assignment expression.
  *
